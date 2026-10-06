@@ -3,6 +3,11 @@ const express = require('express');
 
 const app = express();
 const PORT = process.env.PORT || 4000;
+const allowedOrigins = new Set([
+    'http://localhost:5175',
+    'http://127.0.0.1:5175',
+    ...(process.env.FRONTEND_URL || '').split(',').map(origin => origin.trim().replace(/\/$/, '')).filter(Boolean)
+]);
 
 // Cheia API vine dintr-un fisier .env, NICIODATA scrisa direct in cod.
 // Daca lipseste, serverul porneste, dar orice cerere va esua clar,
@@ -10,6 +15,21 @@ const PORT = process.env.PORT || 4000;
 const API_KEY = process.env.OPENWEATHER_API_KEY;
 
 app.use(express.static('public')); // pentru varianta simpla fara React, daca e nevoie
+
+// Allow the deployed frontend (and local Vite dev server) to call this API.
+app.use((req, res, next) => {
+    const origin = req.get('Origin');
+    res.vary('Origin');
+
+    if (origin && allowedOrigins.has(origin)) {
+        res.setHeader('Access-Control-Allow-Origin', origin);
+        res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+        res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    }
+
+    if (req.method === 'OPTIONS') return res.sendStatus(204);
+    next();
+});
 
 // GET /api/vremea/:oras
 // Acesta e endpoint-ul propriu al serverului nostru. Frontend-ul (React sau
@@ -27,7 +47,7 @@ app.get('/api/vremea/:oras', async (req, res) => {
     
         return res.status(500).json({
         
-            error: 'Serverul nu are configurata cheia API (OPENWEATHER_API_KEY lipseste din .env).'
+            error: 'The API server is missing its OPENWEATHER_API_KEY configuration.'
         });
     }
 
