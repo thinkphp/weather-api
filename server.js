@@ -55,21 +55,42 @@ app.get('/api/vremea/:oras', async (req, res) => {
     
         // Cererea catre API-ul extern se face DE AICI, de pe server -
         // cheia API nu ajunge niciodata in browser-ul utilizatorului.
-        const url = `https://api.openweathermap.org/data/2.5/weather?q=${encodeURIComponent(numeCautare)}&appid=${API_KEY}&units=metric&lang=en`;
-
-        const raspunsExtern = await fetch(url);
+        const orasUrl = encodeURIComponent(numeCautare);
+        const [raspunsExtern, raspunsPrognoza] = await Promise.all([
+            fetch(`https://api.openweathermap.org/data/2.5/weather?q=${orasUrl}&appid=${API_KEY}&units=metric&lang=ro`, { signal: AbortSignal.timeout(10000) }),
+            fetch(`https://api.openweathermap.org/data/2.5/forecast?q=${orasUrl}&appid=${API_KEY}&units=metric&lang=ro`, { signal: AbortSignal.timeout(10000) })
+        ]);
 
         if (raspunsExtern.status === 404) {
             return res.status(404).json({ error: `City "${oras}" was not found.` });
         }
 
-        if (!raspunsExtern.ok) {
-            return res.status(raspunsExtern.status).json({
+        const raspunsEsuat = !raspunsExtern.ok ? raspunsExtern : raspunsPrognoza;
+        if (!raspunsEsuat.ok) {
+            return res.status(raspunsEsuat.status).json({
             error: 'Could not retrieve weather from the weather service.'
             });
         }
 
-        const dateCompleteExterne = await raspunsExtern.json();
+        const [dateCompleteExterne, datePrognoza] = await Promise.all([
+            raspunsExtern.json(),
+            raspunsPrognoza.json()
+        ]);
+
+        const decalajFusOrar = datePrognoza.city.timezone;
+        const dataLocala = timestamp => new Date((timestamp + decalajFusOrar) * 1000).toISOString().slice(0, 10);
+        const maine = new Date(Date.now() + (decalajFusOrar + 86400) * 1000).toISOString().slice(0, 10);
+        const prognozaDeMaine = datePrognoza.list.filter(interval => dataLocala(interval.dt) === maine);
+
+        if (prognozaDeMaine.length === 0) {
+            return res.status(502).json({ error: 'The weather service did not return a forecast for tomorrow.' });
+        }
+
+        const intervalReprezentativ = prognozaDeMaine.reduce((celMaiApropiat, interval) => {
+            const oraLocala = new Date((interval.dt + decalajFusOrar) * 1000).getUTCHours();
+            const oraPrecedenta = new Date((celMaiApropiat.dt + decalajFusOrar) * 1000).getUTCHours();
+            return Math.abs(oraLocala - 12) < Math.abs(oraPrecedenta - 12) ? interval : celMaiApropiat;
+        });
 
         // Simplificam raspunsul - trimitem catre frontend DOAR ce are nevoie,
         // nu tot raspunsul original (care are zeci de campuri nefolosite)
@@ -80,13 +101,22 @@ app.get('/api/vremea/:oras', async (req, res) => {
             descriere: dateCompleteExterne.weather[0].description,
             iconaCod: dateCompleteExterne.weather[0].icon,
             umiditate: dateCompleteExterne.main.humidity,
-            vantKmH: Math.round(dateCompleteExterne.wind.speed * 3.6) // m/s -> km/h
+            vantKmH: Math.round(dateCompleteExterne.wind.speed * 3.6), // m/s -> km/h
+            maine: {
+                minima: Math.round(Math.min(...prognozaDeMaine.map(interval => interval.main.temp_min))),
+                maxima: Math.round(Math.max(...prognozaDeMaine.map(interval => interval.main.temp_max))),
+                descriere: intervalReprezentativ.weather[0].description,
+                iconaCod: intervalReprezentativ.weather[0].icon
+            }
         };
 
         res.json(raspunsSimplificat);
         
     } catch (err) {
         console.error(err);
+        if (err.name === 'TimeoutError' || err.name === 'AbortError') {
+            return res.status(504).json({ error: 'The weather service took too long to respond. Please try again.' });
+        }
         res.status(500).json({ error: 'Unexpected server error.' });
     }
 });
